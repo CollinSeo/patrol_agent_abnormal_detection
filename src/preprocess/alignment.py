@@ -11,6 +11,19 @@ from src.loaders import AnalysisCase
 
 MIN_REQUIRED_MATCHES = 12
 RANSAC_REPROJECTION_THRESHOLD = 5.0
+MIN_REQUIRED_INLIERS = 20
+MIN_INLIER_RATIO = 0.35
+MIN_OVERLAP_RATIO = 0.6
+MAX_MEAN_CORNER_SHIFT_RATIO = 0.35
+MIN_AREA_RATIO = 0.3
+MAX_AREA_RATIO = 2.2
+
+
+class AlignmentError(ValueError):
+    def __init__(self, reason: str, metrics: dict[str, object] | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.metrics = metrics or {}
 
 
 @dataclass(frozen=True)
@@ -27,11 +40,17 @@ def align_case_images(case: AnalysisCase, output_dir: Path | str) -> AlignmentRe
     current = cv2.imread(str(case.current_image_path), cv2.IMREAD_COLOR)
     diff = cv2.imread(str(case.diff_visualization_path), cv2.IMREAD_COLOR)
     if reference is None or current is None or diff is None:
-        raise ValueError(f"Failed to load images for case: {case.case_id}")
+        raise AlignmentError(
+            f"Failed to load images for case: {case.case_id}",
+            {"case_id": case.case_id},
+        )
 
-    homography, match_count, inlier_count = _estimate_homography(reference, current)
+    homography, alignment_metrics = _estimate_homography(reference, current)
     if homography is None:
-        raise ValueError(f"Alignment failed for case {case.case_id}: insufficient feature matches")
+        raise AlignmentError(
+            f"Alignment failed for case {case.case_id}: {alignment_metrics['failure_reason']}",
+            alignment_metrics,
+        )
 
     reference_height, reference_width = reference.shape[:2]
     output_size = (reference_width, reference_height)
@@ -40,6 +59,18 @@ def align_case_images(case: AnalysisCase, output_dir: Path | str) -> AlignmentRe
     warped_diff = cv2.warpPerspective(diff, homography, output_size)
 
     overlap_mask = _build_overlap_mask(current.shape[:2], homography, output_size)
+    overlap_ratio = float(np.count_nonzero(overlap_mask)) / float(overlap_mask.size)
+    if overlap_ratio < MIN_OVERLAP_RATIO:
+        failure_metrics = {
+            **alignment_metrics,
+            "overlap_ratio": overlap_ratio,
+            "failure_reason": f"overlap ratio {overlap_ratio:.3f} below threshold {MIN_OVERLAP_RATIO:.3f}",
+        }
+        raise AlignmentError(
+            f"Alignment failed for case {case.case_id}: {failure_metrics['failure_reason']}",
+            failure_metrics,
+        )
+
     masked_reference = _apply_mask(reference, overlap_mask)
     masked_current = _apply_mask(warped_current, overlap_mask)
     masked_diff = _apply_mask(warped_diff, overlap_mask)
@@ -66,8 +97,8 @@ def align_case_images(case: AnalysisCase, output_dir: Path | str) -> AlignmentRe
 
     preprocess_summary = {
         "alignment_method": "sift_homography",
-        "match_count": match_count,
-        "inlier_count": inlier_count,
+        **alignment_metrics,
+        "overlap_ratio": overlap_ratio,
         "mask_path": str(mask_out),
         "artifacts_dir": str(artifact_dir),
         "raw_reference_image_path": str(case.reference_image_path),
@@ -80,7 +111,7 @@ def align_case_images(case: AnalysisCase, output_dir: Path | str) -> AlignmentRe
     return AlignmentResult(case=aligned_case, preprocess_summary=preprocess_summary)
 
 
-def _estimate_homography(reference: np.ndarray, current: np.ndarray) -> tuple[np.ndarray | None, int, int]:
+def _estimate_homography(reference: np.ndarray, current: np.ndarray) -> tuple[np.ndarray | None, dict[str, object]]:
     gray_reference = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
     gray_current = cv2.cvtColor(current, cv2.COLOR_BGR2GRAY)
 
@@ -89,7 +120,12 @@ def _estimate_homography(reference: np.ndarray, current: np.ndarray) -> tuple[np
     keypoints_current, descriptors_current = sift.detectAndCompute(gray_current, None)
 
     if descriptors_reference is None or descriptors_current is None:
-        return None, 0, 0
+        return None, {
+            "match_count": 0,
+            "inlier_count": 0,
+            "inlier_ratio": 0.0,
+            "failure_reason": "missing SIFT descriptors",
+        }
 
     matcher = cv2.BFMatcher(cv2.NORM_L2)
     knn_matches = matcher.knnMatch(descriptors_current, descriptors_reference, k=2)
@@ -103,18 +139,100 @@ def _estimate_homography(reference: np.ndarray, current: np.ndarray) -> tuple[np
             good_matches.append(first)
 
     if len(good_matches) < MIN_REQUIRED_MATCHES:
-        return None, len(good_matches), 0
+        return None, {
+            "match_count": len(good_matches),
+            "inlier_count": 0,
+            "inlier_ratio": 0.0,
+            "failure_reason": f"good match count {len(good_matches)} below threshold {MIN_REQUIRED_MATCHES}",
+        }
 
     current_points = np.float32([keypoints_current[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
     reference_points = np.float32([keypoints_reference[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
     homography, inlier_mask = cv2.findHomography(current_points, reference_points, cv2.RANSAC, RANSAC_REPROJECTION_THRESHOLD)
     if homography is None or inlier_mask is None:
-        return None, len(good_matches), 0
+        return None, {
+            "match_count": len(good_matches),
+            "inlier_count": 0,
+            "inlier_ratio": 0.0,
+            "failure_reason": "homography estimation failed",
+        }
 
     inlier_count = int(inlier_mask.ravel().sum())
-    if inlier_count < MIN_REQUIRED_MATCHES:
-        return None, len(good_matches), inlier_count
-    return homography, len(good_matches), inlier_count
+    inlier_ratio = float(inlier_count) / float(len(good_matches))
+    if inlier_count < MIN_REQUIRED_INLIERS:
+        return None, {
+            "match_count": len(good_matches),
+            "inlier_count": inlier_count,
+            "inlier_ratio": inlier_ratio,
+            "failure_reason": f"inlier count {inlier_count} below threshold {MIN_REQUIRED_INLIERS}",
+        }
+    if inlier_ratio < MIN_INLIER_RATIO:
+        return None, {
+            "match_count": len(good_matches),
+            "inlier_count": inlier_count,
+            "inlier_ratio": inlier_ratio,
+            "failure_reason": f"inlier ratio {inlier_ratio:.3f} below threshold {MIN_INLIER_RATIO:.3f}",
+        }
+
+    geometry_metrics = _measure_geometry(current.shape[:2], reference.shape[:2], homography)
+    if geometry_metrics["mean_corner_shift_ratio"] > MAX_MEAN_CORNER_SHIFT_RATIO:
+        return None, {
+            "match_count": len(good_matches),
+            "inlier_count": inlier_count,
+            "inlier_ratio": inlier_ratio,
+            **geometry_metrics,
+            "failure_reason": (
+                f"mean corner shift ratio {geometry_metrics['mean_corner_shift_ratio']:.3f} "
+                f"above threshold {MAX_MEAN_CORNER_SHIFT_RATIO:.3f}"
+            ),
+        }
+    if geometry_metrics["area_ratio"] < MIN_AREA_RATIO or geometry_metrics["area_ratio"] > MAX_AREA_RATIO:
+        return None, {
+            "match_count": len(good_matches),
+            "inlier_count": inlier_count,
+            "inlier_ratio": inlier_ratio,
+            **geometry_metrics,
+            "failure_reason": (
+                f"projected area ratio {geometry_metrics['area_ratio']:.3f} outside "
+                f"[{MIN_AREA_RATIO:.3f}, {MAX_AREA_RATIO:.3f}]"
+            ),
+        }
+
+    return homography, {
+        "match_count": len(good_matches),
+        "inlier_count": inlier_count,
+        "inlier_ratio": inlier_ratio,
+        **geometry_metrics,
+    }
+
+
+def _measure_geometry(
+    source_shape: tuple[int, int],
+    destination_shape: tuple[int, int],
+    homography: np.ndarray,
+) -> dict[str, float]:
+    source_height, source_width = source_shape
+    destination_height, destination_width = destination_shape
+    source_corners = np.float32(
+        [[0, 0], [source_width - 1, 0], [source_width - 1, source_height - 1], [0, source_height - 1]]
+    ).reshape(-1, 1, 2)
+    projected_corners = cv2.perspectiveTransform(source_corners, homography).reshape(-1, 2)
+    destination_corners = np.float32(
+        [[0, 0], [destination_width - 1, 0], [destination_width - 1, destination_height - 1], [0, destination_height - 1]]
+    )
+
+    diagonal = float(np.hypot(destination_width, destination_height))
+    corner_distances = np.linalg.norm(projected_corners - destination_corners, axis=1)
+    mean_corner_shift_ratio = float(corner_distances.mean() / diagonal)
+
+    source_area = float(source_width * source_height)
+    projected_area = float(abs(cv2.contourArea(projected_corners.astype(np.float32))))
+    area_ratio = projected_area / source_area if source_area else 0.0
+
+    return {
+        "mean_corner_shift_ratio": mean_corner_shift_ratio,
+        "area_ratio": area_ratio,
+    }
 
 
 def _build_overlap_mask(source_shape: tuple[int, int], homography: np.ndarray, output_size: tuple[int, int]) -> np.ndarray:

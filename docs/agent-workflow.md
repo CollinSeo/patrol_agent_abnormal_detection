@@ -30,12 +30,13 @@
 1. 실행 시작
 2. 런타임 설정 로드
 3. 입력 케이스 탐색
-4. 케이스별 프롬프트 생성
-5. 분석기 선택
-6. 모델 호출 또는 mock 처리
-7. 결과 구조화
-8. 케이스별 파일 저장
-9. 전체 실행 요약 저장
+4. SIFT 기반 정렬 및 품질 판정
+5. 케이스별 프롬프트 생성
+6. 분석기 선택
+7. 모델 호출 또는 mock 처리
+8. 결과 구조화
+9. 케이스별 파일 저장
+10. 전체 실행 요약 저장
 
 ## 단계별 설명
 
@@ -91,7 +92,33 @@ py -3.11 -m src.main --input-dir test_images --output-dir outputs --backend comp
 - `diff_visualization_path`
 - `input_scheme`
 
-### 4. 케이스별 프롬프트 생성
+### 4. SIFT 기반 정렬 및 품질 판정
+
+정렬 위치:
+
+- `src/preprocess/alignment.py`
+
+이 단계에서 수행하는 일:
+
+- 이전 정상 이미지와 현재 이미지 간 SIFT 특징점 추출
+- Lowe ratio test 기반 good match 선택
+- RANSAC homography 추정
+- 현재 이미지와 diff 시각화 이미지에 동일 변환 적용
+- 비중첩 영역 블랙 마스킹
+- 정렬 품질 평가
+
+현재 정렬 실패 판단에 사용하는 주요 지표:
+
+- good match 수
+- inlier 수
+- inlier 비율
+- 정렬 후 overlap 비율
+- 코너 이동량 비율
+- 투영 면적 비율
+
+정렬 품질이 기준에 미달하면 해당 케이스는 더 이상 이상 분석으로 보내지 않고 `앵글 변경`으로 종료한다.
+
+### 5. 케이스별 프롬프트 생성
 
 프롬프트 로딩 위치:
 
@@ -114,7 +141,7 @@ py -3.11 -m src.main --input-dir test_images --output-dir outputs --backend comp
 - `current_image_path`
 - `diff_visualization_path`
 
-### 5. 분석기 선택
+### 6. 분석기 선택
 
 선택 로직 위치:
 
@@ -130,7 +157,7 @@ py -3.11 -m src.main --input-dir test_images --output-dir outputs --backend comp
 - `mock`: 모델 호출 없이 구조 검증용 결과 생성
 - `compatible_api`: 회사의 OpenAI 호환 API 엔드포인트 호출
 
-### 6. 모델 호출 또는 mock 처리
+### 7. 모델 호출 또는 mock 처리
 
 #### mock 분석기
 
@@ -162,7 +189,7 @@ py -3.11 -m src.main --input-dir test_images --output-dir outputs --backend comp
 2. 현재 이미지
 3. 1차 이상 시각화 이미지
 
-### 7. 결과 구조화
+### 8. 결과 구조화
 
 결과 모델 위치:
 
@@ -187,7 +214,7 @@ py -3.11 -m src.main --input-dir test_images --output-dir outputs --backend comp
 - `model_info`
 - `input_paths`
 
-### 8. 케이스별 파일 저장
+### 9. 케이스별 파일 저장
 
 출력 작성 위치:
 
@@ -209,7 +236,7 @@ py -3.11 -m src.main --input-dir test_images --output-dir outputs --backend comp
 - `outputs/spot_1/time_1/result.json`
 - `outputs/spot_1/time_1/report.md`
 
-### 9. 전체 실행 요약 저장
+### 10. 전체 실행 요약 저장
 
 전체 실행이 끝나면 아래 파일이 생성된다.
 
