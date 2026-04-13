@@ -22,6 +22,7 @@ class CaseOutput:
     ignored_factors: list[str] = field(default_factory=list)
     prompt_version: str = ""
     model_info: str = ""
+    preprocess_summary: dict[str, object] = field(default_factory=dict)
     input_paths: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -32,6 +33,7 @@ class CaseOutput:
         *,
         prompt_version: str,
         model_info: str,
+        preprocess_summary: dict[str, object] | None = None,
     ) -> "CaseOutput":
         return cls(
             case_id=case.case_id,
@@ -48,6 +50,7 @@ class CaseOutput:
             ignored_factors=analyzer_result.ignored_factors,
             prompt_version=prompt_version,
             model_info=model_info,
+            preprocess_summary=preprocess_summary or {},
             input_paths={
                 "case_dir": str(case.case_dir),
                 "reference_image_path": str(case.reference_image_path),

@@ -56,6 +56,12 @@ def _build_markdown_report(case_output: CaseOutput) -> str:
 - Current: `{case_output.input_paths['current_image_path']}`
 - Diff: `{case_output.input_paths['diff_visualization_path']}`
 
+## Preprocess Summary
+
+```json
+{json.dumps(case_output.preprocess_summary, indent=2, ensure_ascii=False)}
+```
+
 ## Analysis Log
 
 {analysis_lines}
