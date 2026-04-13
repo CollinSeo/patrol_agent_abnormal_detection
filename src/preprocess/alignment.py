@@ -45,6 +45,17 @@ def align_case_images(case: AnalysisCase, output_dir: Path | str) -> AlignmentRe
             {"case_id": case.case_id},
         )
 
+    original_reference_shape = reference.shape[:2]
+    original_current_shape = current.shape[:2]
+    original_diff_shape = diff.shape[:2]
+
+    target_height, target_width = current.shape[:2]
+    target_size = (target_width, target_height)
+    if reference.shape[:2] != current.shape[:2]:
+        reference = cv2.resize(reference, target_size, interpolation=cv2.INTER_LINEAR)
+    if diff.shape[:2] != current.shape[:2]:
+        diff = cv2.resize(diff, target_size, interpolation=cv2.INTER_LINEAR)
+
     homography, alignment_metrics = _estimate_homography(reference, current)
     if homography is None:
         raise AlignmentError(
@@ -52,13 +63,11 @@ def align_case_images(case: AnalysisCase, output_dir: Path | str) -> AlignmentRe
             alignment_metrics,
         )
 
-    reference_height, reference_width = reference.shape[:2]
-    output_size = (reference_width, reference_height)
+    output_size = target_size
 
-    warped_current = cv2.warpPerspective(current, homography, output_size)
-    warped_diff = cv2.warpPerspective(diff, homography, output_size)
+    warped_reference = cv2.warpPerspective(reference, homography, output_size)
 
-    overlap_mask = _build_overlap_mask(current.shape[:2], homography, output_size)
+    overlap_mask = _build_overlap_mask(reference.shape[:2], homography, output_size)
     overlap_ratio = float(np.count_nonzero(overlap_mask)) / float(overlap_mask.size)
     if overlap_ratio < MIN_OVERLAP_RATIO:
         failure_metrics = {
@@ -71,9 +80,9 @@ def align_case_images(case: AnalysisCase, output_dir: Path | str) -> AlignmentRe
             failure_metrics,
         )
 
-    masked_reference = _apply_mask(reference, overlap_mask)
-    masked_current = _apply_mask(warped_current, overlap_mask)
-    masked_diff = _apply_mask(warped_diff, overlap_mask)
+    masked_reference = _apply_mask(warped_reference, overlap_mask)
+    masked_current = _apply_mask(current, overlap_mask)
+    masked_diff = _apply_mask(diff, overlap_mask)
 
     reference_out = artifact_dir / "reference_aligned.png"
     current_out = artifact_dir / "current_aligned.png"
@@ -97,6 +106,11 @@ def align_case_images(case: AnalysisCase, output_dir: Path | str) -> AlignmentRe
 
     preprocess_summary = {
         "alignment_method": "sift_homography",
+        "alignment_target": "current_image",
+        "resize_target_shape": [target_height, target_width],
+        "original_reference_shape": list(original_reference_shape),
+        "original_current_shape": list(original_current_shape),
+        "original_diff_shape": list(original_diff_shape),
         **alignment_metrics,
         "overlap_ratio": overlap_ratio,
         "mask_path": str(mask_out),
@@ -105,8 +119,8 @@ def align_case_images(case: AnalysisCase, output_dir: Path | str) -> AlignmentRe
         "raw_current_image_path": str(case.current_image_path),
         "raw_diff_visualization_path": str(case.diff_visualization_path),
         "aligned_reference_image_path": str(reference_out),
-        "aligned_current_image_path": str(current_out),
-        "aligned_diff_visualization_path": str(diff_out),
+        "masked_current_image_path": str(current_out),
+        "prepared_diff_visualization_path": str(diff_out),
     }
     return AlignmentResult(case=aligned_case, preprocess_summary=preprocess_summary)
 
@@ -128,7 +142,7 @@ def _estimate_homography(reference: np.ndarray, current: np.ndarray) -> tuple[np
         }
 
     matcher = cv2.BFMatcher(cv2.NORM_L2)
-    knn_matches = matcher.knnMatch(descriptors_current, descriptors_reference, k=2)
+    knn_matches = matcher.knnMatch(descriptors_reference, descriptors_current, k=2)
 
     good_matches = []
     for pair in knn_matches:
@@ -146,9 +160,9 @@ def _estimate_homography(reference: np.ndarray, current: np.ndarray) -> tuple[np
             "failure_reason": f"good match count {len(good_matches)} below threshold {MIN_REQUIRED_MATCHES}",
         }
 
-    current_points = np.float32([keypoints_current[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-    reference_points = np.float32([keypoints_reference[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-    homography, inlier_mask = cv2.findHomography(current_points, reference_points, cv2.RANSAC, RANSAC_REPROJECTION_THRESHOLD)
+    reference_points = np.float32([keypoints_reference[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+    current_points = np.float32([keypoints_current[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+    homography, inlier_mask = cv2.findHomography(reference_points, current_points, cv2.RANSAC, RANSAC_REPROJECTION_THRESHOLD)
     if homography is None or inlier_mask is None:
         return None, {
             "match_count": len(good_matches),
@@ -174,7 +188,7 @@ def _estimate_homography(reference: np.ndarray, current: np.ndarray) -> tuple[np
             "failure_reason": f"inlier ratio {inlier_ratio:.3f} below threshold {MIN_INLIER_RATIO:.3f}",
         }
 
-    geometry_metrics = _measure_geometry(current.shape[:2], reference.shape[:2], homography)
+    geometry_metrics = _measure_geometry(reference.shape[:2], current.shape[:2], homography)
     if geometry_metrics["mean_corner_shift_ratio"] > MAX_MEAN_CORNER_SHIFT_RATIO:
         return None, {
             "match_count": len(good_matches),
