@@ -1,0 +1,36 @@
+{
+  // 실제 모델 호출을 사용할지 여부
+  // mock: 실제 호출 없이 구조 검증만 수행
+  // compatible_api: 회사의 OpenAI 호환 API 게이트웨이 호출
+  "analyzer_backend": "compatible_api",
+
+  // 리포트와 로그에 기록할 공급자 이름
+  // 예: company-kimi, inhouse-vlm, kimi-gateway
+  "provider_name": "company-kimi",
+
+  // 회사에서 받은 실제 모델명
+  // 예: Kimi-K2.5
+  "model_name": "Kimi-K2.5",
+
+  // 회사가 제공한 완전한 API 주소
+  // 일반적으로 /v1/chat/completions 까지 포함해야 함
+  "endpoint_url": "https://your-company-endpoint.example.com/v1/chat/completions",
+
+  // 기본 인증 토큰
+  // 회사가 Bearer 토큰 방식을 쓰면 여기만 채워도 됨
+  "api_key": "YOUR_REAL_API_KEY",
+
+  // 추가 헤더가 없으면 빈 객체로 둔다.
+  // Authorization 헤더를 여기 직접 넣어도 됨.
+  // api_key가 있고 Authorization이 없으면 코드가 자동으로
+  // Authorization: Bearer <api_key> 를 추가한다.
+  "headers": {
+    "Authorization": "Bearer YOUR_REAL_API_KEY",
+    "X-Project": "semiconductor-3s-patrol",
+    "X-Client": "abnormal-change-agent"
+  },
+
+  // 요청 타임아웃 초 단위
+  // 이미지 3장을 함께 보내므로 120 이상 권장
+  "timeout_seconds": 120
+}
